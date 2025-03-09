@@ -1,0 +1,93 @@
+pipeline {
+    agent { label 'PROD' }
+    environment {
+        DOCKER_HUB_CREDENTIALS = credentials('docker-hub-credentials')
+        GITHUB_CREDENTIALS = credentials('GithubAccess')
+    }
+    stages {
+        stage('Checkout Ultimate DevOps Project Demo') {
+            steps {
+                git branch: 'development', credentialsId: 'GITHUB_CREDENTIALS', url: 'https://github.com/PrashanthMunigala/ultimate-devops-project-demo.git'
+            }
+        }
+        stage('Build .NET Service - Accounting') {
+            steps {
+                script {
+                    dir("src/accounting") {
+                        sh '''
+                        PROJECT_FILE=$(find . -name "Accounting.csproj" | head -n 1)
+                        dotnet restore "$PROJECT_FILE"
+                        dotnet build --configuration Release "$PROJECT_FILE"
+                        '''
+                    }
+                }
+            }
+        }
+        stage('Prepare Build Context') {
+            steps {
+                script {
+                    sh '''
+                    mkdir -p build-context/Accounting/proto
+                    cp -r src/accounting/* build-context/Accounting/
+                    cp src/accounting/demo.proto build-context/Accounting/proto/
+                    '''
+                }
+            }
+        }
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    dir("build-context") {
+                        sh "docker build -t prashanthmunigala/accounting:${BUILD_NUMBER} -f Accounting/Dockerfile ."
+                    }
+                }
+            }
+        }
+        stage('Push Docker Image to DockerHub') {
+            steps {
+                script {
+                    sh "docker login -u ${env.DOCKER_HUB_CREDENTIALS_USR} -p ${env.DOCKER_HUB_CREDENTIALS_PSW}"
+                    sh "docker push prashanthmunigala/accounting:${BUILD_NUMBER}"
+                }
+            }
+        }
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main', url: 'https://github.com/PrashanthMunigala/Opentelemetrydemo-app-k8s.git'
+            }
+        }
+        stage('Update Deployment File') {
+           environment {
+              GIT_REPO_NAME = "Opentelemetrydemo-app-k8s"
+              GIT_USER_NAME = "PrashanthMunigala"
+         }
+          steps {
+              withCredentials([string(credentialsId: 'Github', variable: 'GITHUB_TOKEN')]) {
+               sh '''
+                  git config user.email "munigalaprashanth57555@gmail.com"
+                  git config user.name "PrashanthMunigala"
+                  BUILD_NUMBER=${BUILD_NUMBER}
+                  imageTag=$(grep -oP '(?<=prashanthmunigala/accounting:)[^ ]+' deploy.yaml)
+                  sed -i "s/prashanthmunigala\\/accounting:${imageTag}/prashanthmunigala\\/accounting:${BUILD_NUMBER}/g" deploy.yaml
+                  git add deploy.yaml
+                  git commit -m "Update deployment image to version ${BUILD_NUMBER}"
+                  git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:main
+                '''
+                }
+           }
+       }
+    }
+    post {
+        always {
+            echo 'Pipeline completed!'
+        }
+        success {
+            echo 'Pipeline succeeded!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+   }
+}
+
+
